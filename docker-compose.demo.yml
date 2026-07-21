@@ -1,0 +1,83 @@
+services:
+  hardhat-node:
+    build:
+      context: .
+      dockerfile: Dockerfile.hardhat
+    container_name: real-estate-hardhat-demo
+    ports:
+      - "8545:8545"
+
+  deploy-contracts:
+    build:
+      context: .
+      dockerfile: Dockerfile.hardhat
+    container_name: real-estate-deployer-demo
+    depends_on:
+      - hardhat-node
+    command: >
+      sh -c "
+      echo 'Waiting for Hardhat node...' &&
+      sleep 8 &&
+      npx hardhat ignition deploy ignition/modules/RealEstateMarket.ts --network docker
+      "
+
+  registry-backend:
+    build:
+      context: ./registry-backend
+      dockerfile: Dockerfile
+    container_name: real-estate-registry-api-demo
+    restart: unless-stopped
+    environment:
+      PORT: 3002
+      TRANSFER_DELAY_MS: 5000
+    ports:
+      - "3002:3002"
+
+  oracle-backend:
+    build:
+      context: ./oracle-backend
+      dockerfile: Dockerfile
+    container_name: real-estate-oracle-demo
+    depends_on:
+      deploy-contracts:
+        condition: service_completed_successfully
+      registry-backend:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      RPC_URL: http://hardhat-node:8545
+      REGISTRY_API_URL: http://registry-backend:3002
+      ORACLE_ADDRESS: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+      MARKET_ADDRESS: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
+      FULFILLER_PRIVATE_KEY: 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
+      PORT: 3001
+    ports:
+      - "3001:3001"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_MARKET_ADDRESS: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
+        VITE_ORACLE_ADDRESS: 0x5FbDB2315678afecb367f032d93F642f64180aa3
+        VITE_REGISTRY_FRONTEND_URL: http://localhost:8081
+    container_name: real-estate-frontend-demo
+    restart: unless-stopped
+    depends_on:
+      - oracle-backend
+    ports:
+      - "8080:80"
+
+  registry-frontend:
+    build:
+      context: ./registry-frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_REGISTRY_API_URL: http://localhost:3002
+    container_name: real-estate-registry-frontend-demo
+    restart: unless-stopped
+    depends_on:
+      - registry-backend
+    ports:
+      - "8081:80"

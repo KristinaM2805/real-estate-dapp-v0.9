@@ -1,0 +1,26 @@
+services:
+  oracle-backend:
+    build:
+      context: ./oracle-backend
+      dockerfile: Dockerfile
+    container_name: real-estate-oracle
+    restart: unless-stopped
+    environment:
+      RPC_URL: ${RPC_URL}
+      ORACLE_ADDRESS: ${ORACLE_ADDRESS}
+      MARKET_ADDRESS: ${MARKET_ADDRESS}
+      FULFILLER_PRIVATE_KEY: ${FULFILLER_PRIVATE_KEY}
+      PORT: 3001
+    ports:
+      - "3001:3001"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: real-estate-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - oracle-backend
