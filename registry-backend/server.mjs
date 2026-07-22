@@ -20,7 +20,7 @@ const users = [
     passport: "MP1234567",
     fullName: "Ivan Petrov",
     role: "seller",
-    walletAddress: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    walletAddress: "0x8Ba321cCB99c2d01C71A002B5D605646Ec18fE4C",
   },
   {
     id: "buyer-kristina",
@@ -28,7 +28,7 @@ const users = [
     passport: "HB1234567",
     fullName: "Kristina Maykushina",
     role: "buyer",
-    walletAddress: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    walletAddress: "0x5841dC81afa4de0FDfb3D62420EA0278c59d891b",
   },
 ];
 
@@ -40,7 +40,7 @@ const properties = {
     cadastralNumber: "77:01:0004012:1056",
     propertyAddress: "Minsk, Demo street, 10-56",
     ownerName: "Ivan Petrov",
-    ownerAddress: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    ownerAddress: "0x8Ba321cCB99c2d01C71A002B5D605646Ec18fE4C",
     registryId: "REG-2026-000001",
     status: "ACTIVE",
   },
@@ -48,7 +48,7 @@ const properties = {
     cadastralNumber: "77:02:0001234:5678",
     propertyAddress: "Minsk, Demo avenue, 12-34",
     ownerName: "Anna Sidorova",
-    ownerAddress: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+    ownerAddress: "0x8Ba321cCB99c2d01C71A002B5D605646Ec18fE4C",
     registryId: "REG-2026-000002",
     status: "ACTIVE",
   },
