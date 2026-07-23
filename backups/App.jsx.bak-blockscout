@@ -74,8 +74,8 @@ function fmtSec(s) {
 
 function getDefaultExplorerBase(chainId) {
   const id = Number(chainId);
-  if (id === 1) return "https://eth.blockscout.com";
-if (id === 11155111) return "https://eth-sepolia.blockscout.com";
+  if (id === 1) return "https://etherscan.io";
+  if (id === 11155111) return "https://sepolia.etherscan.io";
   return "";
 }
 function getChainLabel(chainId) {
@@ -252,9 +252,9 @@ function PublicVerificationBox({ deal, chainId, txHashes }) {
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 }}>
         {openAddress ? (
-          <a href={openAddress} target="_blank" rel="noreferrer" style={linkStyle}>Открыть контракт в Blockscout</a>
+          <a href={openAddress} target="_blank" rel="noreferrer" style={linkStyle}>Открыть контракт в Etherscan</a>
         ) : (
-          <span style={disabledStyle}>Blockscout появится в Sepolia</span>
+          <span style={disabledStyle}>Etherscan появится в Sepolia</span>
         )}
         {openPayment ? (
           <a href={openPayment} target="_blank" rel="noreferrer" style={linkStyle}>Открыть транзакцию оплаты</a>
@@ -270,7 +270,7 @@ function PublicVerificationBox({ deal, chainId, txHashes }) {
 
       {isLocal && (
         <p style={{ marginTop: 12, color: "#64748b", lineHeight: 1.5 }}>
-          Сейчас выбрана локальная Hardhat-сеть, поэтому Blockscout не может открыть этот адрес. После деплоя в Sepolia этот же блок автоматически начнёт вести на Sepolia Blockscout. Для локальной проверки можно использовать RPC-команду <code>eth_getBalance</code> по адресу контракта выше. Заявку на переоформление покупатель подтверждает отдельно на сайте mock-реестра.
+          Сейчас выбрана локальная Hardhat-сеть, поэтому Etherscan не может открыть этот адрес. После деплоя в Sepolia этот же блок автоматически начнёт вести на Sepolia Etherscan. Для локальной проверки можно использовать RPC-команду <code>eth_getBalance</code> по адресу контракта выше. Заявку на переоформление покупатель подтверждает отдельно на сайте mock-реестра.
         </p>
       )}
     </section>
@@ -354,7 +354,7 @@ export default function App() {
     if (stage === 2 && !hasBuyer) return "Сделка создана и опубликована: продавец подтверждён Oracle. Ваши действия выполнены, ожидаем подключение покупателя.";
     if (stage === 3) return `Покупатель ${buyerDisplayName} подключился и подал личные данные. Oracle проверяет покупателя. Продавцу пока ничего делать не нужно.`;
     if (stage === 4) return `Покупатель ${buyerDisplayName} подтверждён Oracle. Ожидаем оплату ${priceEth} ETH в escrow.`;
-    if (stage === 5) return "Покупатель внёс оплату в escrow. Проверьте депозит через Blockscout и создайте заявку в реестр.";
+    if (stage === 5) return "Покупатель внёс оплату в escrow. Проверьте депозит через explorer и создайте заявку в реестр.";
     if (stage === 6) return "Продавец подтвердил escrow. Oracle создаёт заявку в реестр.";
     if (stage === 7) return "Идёт переоформление права собственности в реестре. Oracle отправит результат в смарт-контракт автоматически.";
     return null;
@@ -375,7 +375,7 @@ export default function App() {
     if (stage === 2 && hasBuyer) return `${idText} Покупатель выбран, ожидается подача данных.`;
     if (stage === 3) return `${idText} Данные покупателя отправлены. Oracle проверяет покупателя.`;
     if (stage === 4) return `${idText} Покупатель подтверждён. Ожидается ручная оплата в escrow.`;
-    if (stage === 5) return `${idText} Оплата внесена в escrow. Продавец должен проверить депозит через Blockscout и разрешить заявку в реестр.`;
+    if (stage === 5) return `${idText} Оплата внесена в escrow. Продавец должен проверить депозит через explorer и разрешить заявку в реестр.`;
     if (stage === 6) return `${idText} Продавец подтвердил escrow. Oracle создаёт заявку в реестр.`;
     if (stage === 7) return `${idText} Реестр регистрирует нового владельца. Ожидаем финальное подтверждение Oracle.`;
     if (stage === 8) return `${idText} Сделка завершена: новый владелец зарегистрирован, средства переведены продавцу.`;
@@ -892,7 +892,7 @@ export default function App() {
 
       setMmStatus("success");
       mmTimer.current = setTimeout(() => setMmStatus("idle"), 3000);
-      setMessage("💰 Оплата внесена в escrow. Теперь продавец может проверить депозит через Blockscout и создать заявку в реестр.");
+      setMessage("💰 Оплата внесена в escrow. Теперь продавец может проверить депозит через explorer и создать заявку в реестр.");
       setAnimPhase(p => p + 1);
 
       // Force buyer window to stay synchronized until Oracle completes registry transfer.
@@ -1461,7 +1461,7 @@ export default function App() {
           <div className="nameInputBox" style={{ gridColumn: "1/-1" }}>
             <strong>Проверка escrow продавцом</strong>
             <p style={{ margin: "8px 0 12px", color: "#64748b", lineHeight: 1.5 }}>
-              Покупатель внёс оплату. Ниже в блоке «Публичная проверка escrow» показаны адрес escrow-контракта, сумма сделки, сумма в escrow и ссылка на Blockscout. В локальной сети ссылка станет активной автоматически после деплоя в Sepolia.
+              Покупатель внёс оплату. Ниже в блоке «Публичная проверка escrow» показаны адрес escrow-контракта, сумма сделки, сумма в escrow и ссылка на Etherscan. В локальной сети ссылка станет активной автоматически после деплоя в Sepolia.
             </p>
             <button
               type="button"
@@ -1561,7 +1561,7 @@ export default function App() {
               {stage === 2 && !hasBuyer && "Покупатель ещё не подключился. Сделка находится в списке активных подтверждённых сделок."}
               {stage === 3 && `Покупатель ${buyerDisplayName} отправил личные данные. Oracle выполняет проверку.`}
               {stage === 4 && `Покупатель ${buyerDisplayName} прошёл проверку. Ожидается оплата в escrow.`}
-              {stage === 5 && `Покупатель ${buyerDisplayName} внёс оплату в escrow. Проверьте депозит через Blockscout и нажмите кнопку создания заявки в реестр.`}
+              {stage === 5 && `Покупатель ${buyerDisplayName} внёс оплату в escrow. Проверьте депозит через explorer и нажмите кнопку создания заявки в реестр.`}
               {stage === 6 && "Продавец подтвердил escrow. Oracle создаёт заявку в реестр."}
               {stage === 7 && "Oracle переоформляет право собственности в реестре. Действия продавца не требуются."}
             </p>
