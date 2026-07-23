@@ -327,7 +327,7 @@ export default function App() {
   // - продавец может отменить объявление, пока покупатель ещё не назначен;
   // - покупатель может выйти из сделки только после своей проверки и до оплаты.
   const canCloseCancelledDeal = Boolean(deal && isCancelled && deal?.lastOracleError);
-  const canSellerCancelListing = Boolean(deal && isSeller && !hasBuyer && !isCompleted && !isCancelled && stage !== 1);
+  const canSellerCancelListing = Boolean(deal && isSeller && !hasBuyer && !isCompleted && !isCancelled);
   const canBuyerLeaveBeforePayment = Boolean(
     deal &&
     isBuyer &&
