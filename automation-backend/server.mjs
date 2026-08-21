@@ -2795,7 +2795,121 @@ app.get(
 // ============================================================
 // START SERVER
 // ============================================================
+app.post(
+  "/api/manual/wait-seller-verification",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const { dealId } = req.body || {};
 
+      if (
+        dealId === undefined ||
+        dealId === null
+      ) {
+        return res.status(400).json({
+          success: false,
+          verified: false,
+          error: "dealId is required",
+        });
+      }
+
+      const timeoutMs = 90000;
+      const pollIntervalMs = 2000;
+      const startedAt = Date.now();
+
+      while (
+        Date.now() - startedAt <
+        timeoutMs
+      ) {
+        const deal =
+          await readManualDeal(
+            dealId
+          );
+
+        if (deal.stage === 2) {
+          return res.json({
+            success: true,
+            verified: true,
+            dealId:
+              Number(dealId),
+            stage:
+              deal.stage,
+            stageName:
+              deal.stageName,
+            lastOracleError:
+              deal.lastOracleError || "",
+            deal,
+          });
+        }
+
+        if (
+          deal.lastOracleError &&
+          deal.lastOracleError.length > 0
+        ) {
+          return res.json({
+            success: false,
+            verified: false,
+            dealId:
+              Number(dealId),
+            stage:
+              deal.stage,
+            stageName:
+              deal.stageName,
+            lastOracleError:
+              deal.lastOracleError,
+            deal,
+          });
+        }
+
+        await new Promise(
+          resolve =>
+            setTimeout(
+              resolve,
+              pollIntervalMs
+            )
+        );
+      }
+
+      const deal =
+        await readManualDeal(
+          dealId
+        );
+
+      return res.json({
+        success: false,
+        verified: false,
+        dealId:
+          Number(dealId),
+        stage:
+          deal.stage,
+        stageName:
+          deal.stageName,
+        lastOracleError:
+          deal.lastOracleError || "",
+        error:
+          "seller_verification_timeout",
+        deal,
+      });
+
+    } catch (error) {
+      console.error(
+        "❌ wait-seller-verification error:",
+        errorMessage(error)
+      );
+
+      return res
+        .status(500)
+        .json({
+          success: false,
+          verified: false,
+          error:
+            "wait_seller_verification_failed",
+          message:
+            errorMessage(error),
+        });
+    }
+  }
+);
 app.listen(
   PORT,
   () => {
