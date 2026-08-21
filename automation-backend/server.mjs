@@ -1666,6 +1666,89 @@ app.post(
   }
 );
 // ============================================================
+// DYNAAPP — PAYMENT VIA BODY
+// ============================================================
+
+app.post(
+  "/api/manual/payment",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const {
+        dealId,
+        amountEth,
+      } = req.body;
+
+      const parsedDealId = Number(dealId);
+
+      if (
+        !Number.isInteger(parsedDealId) ||
+        parsedDealId < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      if (!amountEth) {
+        return res.status(400).json({
+          success: false,
+          error: "missing_amount",
+          message: "amountEth обязателен",
+        });
+      }
+
+      const tx =
+        await marketBuyer.reservePayment(
+          parsedDealId,
+          {
+            value: ethers.parseEther(
+              String(amountEth)
+            ),
+          }
+        );
+
+      const receipt = await tx.wait();
+
+      const deal =
+        await readManualDeal(parsedDealId);
+
+      return res.json(
+        transactionResponse(
+          receipt,
+          {
+            message:
+              "Оплата внесена в escrow",
+
+            dealId: parsedDealId,
+
+            deal,
+
+            expectedStage: {
+              stage: 5,
+              stageName: "PaymentReceived",
+            },
+          }
+        )
+      );
+
+    } catch (error) {
+      console.error(
+        "paymentFromBody:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: "payment_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+// ============================================================
 // CHECK CURRENT STAGE
 // ============================================================
 
