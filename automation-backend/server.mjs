@@ -1445,7 +1445,94 @@ app.post(
     }
   }
 );
+// ============================================================
+// DYNAAPP — SELLER DATA VIA BODY
+// ============================================================
 
+app.post(
+  "/api/manual/seller-data",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const {
+        dealId,
+        sellerFullName,
+        sellerPassportHash,
+      } = req.body;
+
+      const parsedDealId = Number(dealId);
+
+      if (
+        !Number.isInteger(parsedDealId) ||
+        parsedDealId < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      if (
+        !sellerFullName ||
+        !sellerPassportHash
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "missing_fields",
+          message:
+            "sellerFullName и sellerPassportHash обязательны",
+        });
+      }
+
+      const tx =
+        await marketSeller.submitSellerData(
+          parsedDealId,
+          String(sellerFullName),
+          String(sellerPassportHash)
+        );
+
+      const receipt = await tx.wait();
+
+      const deal =
+        await readManualDeal(parsedDealId);
+
+      return res.json(
+        transactionResponse(
+          receipt,
+          {
+            message:
+              "Данные продавца отправлены. Oracle проверяет владельца.",
+
+            dealId: parsedDealId,
+
+            deal,
+
+            nextStep:
+              `GET /api/manual/deals/${parsedDealId}/stage`,
+
+            expectedStage: {
+              stage: 2,
+              stageName: "SellerVerified",
+            },
+          }
+        )
+      );
+
+    } catch (error) {
+      console.error(
+        "submitSellerDataFromBody:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: "seller_data_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
 
 // ============================================================
 // CHECK CURRENT STAGE
