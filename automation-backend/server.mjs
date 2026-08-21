@@ -1751,7 +1751,447 @@ app.post(
 // ============================================================
 // DYNAAPP — WAIT SELLER VERIFICATION
 // ============================================================
+// ============================================================
+// DYNAAPP — WAIT BUYER VERIFICATION
+// ============================================================
 
+app.post(
+  "/api/manual/wait-buyer-verification",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const dealId = Number(req.body.dealId);
+
+      if (!Number.isInteger(dealId) || dealId < 0) {
+        return res.status(400).json({
+          success: false,
+          verified: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      const timeoutMs = 90000;
+      const intervalMs = 2000;
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const deal = await readManualDeal(dealId);
+
+        if (deal.stage === 4) {
+          return res.json({
+            success: true,
+            verified: true,
+            dealId,
+            stage: deal.stage,
+            stageName: deal.stageName,
+            deal,
+          });
+        }
+
+        if (deal.lastOracleError) {
+          return res.json({
+            success: false,
+            verified: false,
+            dealId,
+            stage: deal.stage,
+            stageName: deal.stageName,
+            lastOracleError: deal.lastOracleError,
+            deal,
+          });
+        }
+
+        await new Promise(resolve =>
+          setTimeout(resolve, intervalMs)
+        );
+      }
+
+      const deal = await readManualDeal(dealId);
+
+      return res.json({
+        success: false,
+        verified: false,
+        dealId,
+        stage: deal.stage,
+        stageName: deal.stageName,
+        lastOracleError:
+          deal.lastOracleError ||
+          "Истекло время ожидания проверки покупателя",
+        deal,
+      });
+
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        verified: false,
+        error: "buyer_verification_wait_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+
+
+// ============================================================
+// DYNAAPP — SELLER CONFIRM ESCROW VIA BODY
+// ============================================================
+
+app.post(
+  "/api/manual/confirm-escrow",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const dealId = Number(req.body.dealId);
+
+      if (!Number.isInteger(dealId) || dealId < 0) {
+        return res.status(400).json({
+          success: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      const tx =
+        await marketSeller
+          .sellerConfirmEscrowAndRequestRegistry(dealId);
+
+      const receipt = await tx.wait();
+      const deal = await readManualDeal(dealId);
+
+      return res.json(
+        transactionResponse(receipt, {
+          message:
+            "Escrow подтверждён продавцом. Запрос в реестр инициирован.",
+          dealId,
+          deal,
+        })
+      );
+
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        error: "confirm_escrow_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+
+
+// ============================================================
+// DYNAAPP — WAIT REGISTRY REQUEST
+// ============================================================
+
+app.post(
+  "/api/manual/wait-registry-request",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const dealId = Number(req.body.dealId);
+
+      if (!Number.isInteger(dealId) || dealId < 0) {
+        return res.status(400).json({
+          success: false,
+          found: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      const timeoutMs = 90000;
+      const intervalMs = 2000;
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const response =
+          await fetch(
+            `${REGISTRY_API_URL}/transfer-requests`
+          );
+
+        if (response.ok) {
+          const data = await response.json();
+
+          const request =
+            (data.requests || []).find(
+              item =>
+                String(item.dealId) ===
+                String(dealId)
+            );
+
+          if (request) {
+            return res.json({
+              success: true,
+              found: true,
+              dealId,
+              registryRequestId: request.id,
+              registryStatus: request.status,
+              request,
+            });
+          }
+        }
+
+        await new Promise(resolve =>
+          setTimeout(resolve, intervalMs)
+        );
+      }
+
+      return res.json({
+        success: false,
+        found: false,
+        dealId,
+        message:
+          "Истекло время ожидания заявки в Registry",
+      });
+
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        found: false,
+        error: "registry_request_wait_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+
+
+// ============================================================
+// DYNAAPP — APPROVE REGISTRY REQUEST
+// ============================================================
+
+app.post(
+  "/api/manual/approve-registry-request",
+  async (req, res) => {
+    try {
+      const {
+        registryRequestId,
+        email,
+        passport,
+      } = req.body;
+
+      if (
+        !registryRequestId ||
+        !email ||
+        !passport
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "missing_fields",
+          message:
+            "registryRequestId, email и passport обязательны",
+        });
+      }
+
+      const response =
+        await fetch(
+          `${REGISTRY_API_URL}/transfer-requests/${registryRequestId}/approve`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              email,
+              passport,
+            }),
+          }
+        );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        return res.status(response.status).json({
+          success: false,
+          error: "registry_approval_failed",
+          registryResponse: data,
+        });
+      }
+
+      return res.json({
+        success: true,
+        approved: true,
+        registryRequestId,
+        request: data.request,
+      });
+
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        approved: false,
+        error: "registry_approval_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+
+
+// ============================================================
+// DYNAAPP — WAIT OWNERSHIP TRANSFER
+// ============================================================
+
+app.post(
+  "/api/manual/wait-ownership-transfer",
+  async (req, res) => {
+    try {
+      const { registryRequestId } = req.body;
+
+      if (!registryRequestId) {
+        return res.status(400).json({
+          success: false,
+          transferred: false,
+          error: "missing_registry_request_id",
+        });
+      }
+
+      const timeoutMs = 90000;
+      const intervalMs = 2000;
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const response =
+          await fetch(
+            `${REGISTRY_API_URL}/transfer-requests/${registryRequestId}`
+          );
+
+        if (response.ok) {
+          const data = await response.json();
+          const request = data.request;
+
+          if (
+            request.status ===
+            "OWNERSHIP_TRANSFERRED"
+          ) {
+            return res.json({
+              success: true,
+              transferred: true,
+              registryRequestId,
+              newRegistryId:
+                request.newRegistryId,
+              request,
+            });
+          }
+
+          if (request.status === "REJECTED") {
+            return res.json({
+              success: false,
+              transferred: false,
+              registryRequestId,
+              error: "registry_rejected",
+              message:
+                request.rejectReason ||
+                "Registry отклонил переход права",
+              request,
+            });
+          }
+        }
+
+        await new Promise(resolve =>
+          setTimeout(resolve, intervalMs)
+        );
+      }
+
+      return res.json({
+        success: false,
+        transferred: false,
+        registryRequestId,
+        message:
+          "Истекло время ожидания перехода права собственности",
+      });
+
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        transferred: false,
+        error: "ownership_transfer_wait_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+
+
+// ============================================================
+// DYNAAPP — WAIT FINAL DEAL COMPLETION
+// ============================================================
+
+app.post(
+  "/api/manual/wait-completed",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const dealId = Number(req.body.dealId);
+
+      if (!Number.isInteger(dealId) || dealId < 0) {
+        return res.status(400).json({
+          success: false,
+          completed: false,
+          error: "invalid_deal_id",
+        });
+      }
+
+      const timeoutMs = 90000;
+      const intervalMs = 2000;
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const deal = await readManualDeal(dealId);
+
+        if (deal.stage === 8) {
+          return res.json({
+            success: true,
+            completed: true,
+            dealId,
+            stage: 8,
+            stageName: "Completed",
+            deal,
+          });
+        }
+
+        if (
+          deal.stage === 9 ||
+          deal.lastOracleError
+        ) {
+          return res.json({
+            success: false,
+            completed: false,
+            dealId,
+            stage: deal.stage,
+            stageName: deal.stageName,
+            lastOracleError:
+              deal.lastOracleError,
+            deal,
+          });
+        }
+
+        await new Promise(resolve =>
+          setTimeout(resolve, intervalMs)
+        );
+      }
+
+      const deal = await readManualDeal(dealId);
+
+      return res.json({
+        success: false,
+        completed: false,
+        dealId,
+        stage: deal.stage,
+        stageName: deal.stageName,
+        message:
+          "Истекло время ожидания завершения сделки",
+        deal,
+      });
+
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        completed: false,
+        error: "completion_wait_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
 app.post(
   "/api/manual/wait-seller-verification",
   requireBlockchain,
