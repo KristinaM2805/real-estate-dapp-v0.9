@@ -1749,6 +1749,93 @@ app.post(
   }
 );
 // ============================================================
+// DYNAAPP — WAIT SELLER VERIFICATION
+// ============================================================
+
+app.post(
+  "/api/manual/wait-seller-verification",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const dealId = Number(req.body.dealId);
+
+      if (
+        !Number.isInteger(dealId) ||
+        dealId < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      const timeoutMs = 90000;
+      const intervalMs = 2000;
+      const startedAt = Date.now();
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const deal = await readManualDeal(dealId);
+
+        if (deal.stage === 2) {
+          return res.json({
+            success: true,
+            verified: true,
+            dealId,
+            stage: deal.stage,
+            stageName: deal.stageName,
+            lastOracleError: deal.lastOracleError,
+            deal,
+          });
+        }
+
+        if (deal.lastOracleError) {
+          return res.json({
+            success: false,
+            verified: false,
+            dealId,
+            stage: deal.stage,
+            stageName: deal.stageName,
+            lastOracleError: deal.lastOracleError,
+            deal,
+          });
+        }
+
+        await new Promise(
+          resolve => setTimeout(resolve, intervalMs)
+        );
+      }
+
+      const deal = await readManualDeal(dealId);
+
+      return res.json({
+        success: false,
+        verified: false,
+        dealId,
+        stage: deal.stage,
+        stageName: deal.stageName,
+        lastOracleError:
+          deal.lastOracleError ||
+          "Истекло время ожидания проверки продавца",
+        deal,
+      });
+
+    } catch (error) {
+      console.error(
+        "waitSellerVerification:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        verified: false,
+        error: "seller_verification_wait_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+// ============================================================
 // CHECK CURRENT STAGE
 // ============================================================
 
