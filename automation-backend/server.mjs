@@ -1578,6 +1578,94 @@ app.post(
   }
 );
 // ============================================================
+// DYNAAPP — BUYER DATA VIA BODY
+// ============================================================
+
+app.post(
+  "/api/manual/buyer-data",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const {
+        dealId,
+        buyerFullName,
+        buyerPassportHash,
+      } = req.body;
+
+      const parsedDealId = Number(dealId);
+
+      if (
+        !Number.isInteger(parsedDealId) ||
+        parsedDealId < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      if (
+        !buyerFullName ||
+        !buyerPassportHash
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "missing_fields",
+          message:
+            "buyerFullName и buyerPassportHash обязательны",
+        });
+      }
+
+      const tx =
+        await marketBuyer.submitBuyerData(
+          parsedDealId,
+          String(buyerFullName),
+          String(buyerPassportHash)
+        );
+
+      const receipt = await tx.wait();
+
+      const deal =
+        await readManualDeal(parsedDealId);
+
+      return res.json(
+        transactionResponse(
+          receipt,
+          {
+            message:
+              "Данные покупателя отправлены. Oracle проверяет покупателя.",
+
+            dealId: parsedDealId,
+
+            deal,
+
+            nextStep:
+              "Проверить стадию сделки",
+
+            expectedStage: {
+              stage: 4,
+              stageName: "BuyerVerified",
+            },
+          }
+        )
+      );
+
+    } catch (error) {
+      console.error(
+        "submitBuyerDataFromBody:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        error: "buyer_data_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
+// ============================================================
 // CHECK CURRENT STAGE
 // ============================================================
 
