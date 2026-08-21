@@ -1138,7 +1138,81 @@ app.get(
 // 03 — MANUAL DEAL FLOW
 // ============================================================
 
+app.post("/api/manual/wait-seller-verification", async (req, res) => {
+  try {
+    const { dealId } = req.body || {};
 
+    if (dealId === undefined || dealId === null) {
+      return res.status(400).json({
+        success: false,
+        verified: false,
+        error: "dealId is required",
+      });
+    }
+
+    const timeoutMs = 90000;
+    const pollIntervalMs = 2000;
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const deal = await readManualDeal(dealId);
+
+      if (deal.stage === 2) {
+        return res.json({
+          success: true,
+          verified: true,
+          dealId: Number(dealId),
+          stage: deal.stage,
+          stageName: deal.stageName,
+          lastOracleError: deal.lastOracleError || "",
+          deal,
+        });
+      }
+
+      if (deal.lastOracleError) {
+        return res.status(400).json({
+          success: false,
+          verified: false,
+          dealId: Number(dealId),
+          stage: deal.stage,
+          stageName: deal.stageName,
+          lastOracleError: deal.lastOracleError,
+          error: deal.lastOracleError,
+          deal,
+        });
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, pollIntervalMs)
+      );
+    }
+
+    const deal = await readManualDeal(dealId);
+
+    return res.status(408).json({
+      success: false,
+      verified: false,
+      dealId: Number(dealId),
+      stage: deal.stage,
+      stageName: deal.stageName,
+      lastOracleError: deal.lastOracleError || "",
+      error: "Seller verification timeout",
+      deal,
+    });
+
+  } catch (err) {
+    console.error(
+      "❌ wait-seller-verification error:",
+      err.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      verified: false,
+      error: err.message,
+    });
+  }
+});
 // ============================================================
 // STEP 01 — CREATE DEAL
 // ============================================================
