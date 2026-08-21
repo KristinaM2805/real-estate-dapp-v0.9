@@ -152,33 +152,136 @@ async function processOracleLogs() {
     );
 
     for (const log of logs) {
-      let parsed;
-
       try {
-        parsed =
-          oracleContract.interface.parseLog(log);
-      } catch {
-        continue;
+        let parsed;
+
+        try {
+          parsed =
+            oracleContract.interface.parseLog(log);
+        } catch {
+          continue;
+        }
+
+        if (!parsed) continue;
+
+        const uniqueEventKey =
+          `${log.transactionHash}:${log.index}`;
+
+        if (
+          processedEvents.has(uniqueEventKey)
+        ) {
+          continue;
+        }
+
+        if (parsed.name === "VerificationRequest") {
+          const [
+            requestId,
+            dealId,
+            dealContract,
+            reqType,
+            cadastralNumber,
+            subjectAddress,
+            fullName,
+          ] = parsed.args;
+
+          const rid =
+            requestId.toString();
+
+          const reqTypeNum =
+            Number(reqType);
+
+          console.log(
+            `\n📨 VerificationRequest #${rid} (deal ${dealId}, type=${reqTypeNum})`
+          );
+
+          console.log(
+            `   Subject: ${subjectAddress} | ${fullName}`
+          );
+
+          if (cadastralNumber) {
+            console.log(
+              `   Cadastral: ${cadastralNumber}`
+            );
+          }
+
+          if (reqTypeNum === 0) {
+            await handleSellerVerification(
+              rid,
+              dealId,
+              cadastralNumber,
+              subjectAddress,
+              fullName
+            );
+          } else if (reqTypeNum === 1) {
+            await handleBuyerVerification(
+              rid,
+              dealId,
+              subjectAddress,
+              fullName
+            );
+          }
+        }
+
+        if (
+          parsed.name ===
+          "RegistryTransferRequest"
+        ) {
+          const [
+            requestId,
+            dealId,
+            dealContract,
+            cadastralNumber,
+            sellerFullName,
+            buyerFullName,
+            priceWei,
+          ] = parsed.args;
+
+          const rid =
+            requestId.toString();
+
+          console.log(
+            `\n📨 RegistryTransferRequest #${rid} (deal ${dealId})`
+          );
+
+          console.log(
+            `   Cadastral: ${cadastralNumber}`
+          );
+
+          console.log(
+            `   ${sellerFullName} → ${buyerFullName}`
+          );
+
+          console.log(
+            `   Price: ${ethers.formatEther(priceWei)} ETH`
+          );
+
+          await handleRegistryTransfer(
+            rid,
+            dealId,
+            dealContract,
+            cadastralNumber,
+            sellerFullName,
+            buyerFullName,
+            priceWei
+          );
+        }
+
+        // Помечаем событие обработанным
+        // только после успешной обработки.
+        processedEvents.add(
+          uniqueEventKey
+        );
+
+      } catch (eventError) {
+        console.error(
+          "❌ Oracle event processing error:",
+          eventError.message
+        );
       }
-
-      if (!parsed) continue;
-
-      const uniqueEventKey =
-        `${log.transactionHash}:${log.index}`;
-
-      if (
-        processedEvents.has(uniqueEventKey)
-      ) {
-        continue;
-      }
-
-      processedEvents.add(uniqueEventKey);
-
-      // дальше твоя существующая обработка
-      // VerificationRequest / RegistryTransferRequest
     }
 
-    lastProcessedBlock = latestBlock;
+    lastProcessedBlock =
+      latestBlock;
 
   } catch (err) {
     console.error(
