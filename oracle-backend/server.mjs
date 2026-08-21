@@ -27,7 +27,9 @@ const {
 } = process.env;
 
 if (!ORACLE_ADDRESS || !MARKET_ADDRESS || !FULFILLER_PRIVATE_KEY) {
-  console.error("❌ Missing env: ORACLE_ADDRESS, MARKET_ADDRESS, FULFILLER_PRIVATE_KEY");
+  console.error(
+    "❌ Missing env: ORACLE_ADDRESS, MARKET_ADDRESS, FULFILLER_PRIVATE_KEY"
+  );
   process.exit(1);
 }
 
@@ -57,39 +59,48 @@ let config = {
 
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const fulfiller = new ethers.Wallet(FULFILLER_PRIVATE_KEY, provider);
-const oracleContract = new ethers.Contract(ORACLE_ADDRESS, ORACLE_ABI, fulfiller);
-const marketContract = new ethers.Contract(MARKET_ADDRESS, MARKET_ABI, provider);
 
-console.log(`🔮 Oracle backend starting...`);
-console.log(`   Oracle contract:  ${ORACLE_ADDRESS}`);
-console.log(`   Market contract:  ${MARKET_ADDRESS}`);
-console.log(`   Registry API:      ${REGISTRY_API_URL}`);
-console.log(`   Fulfiller:        ${fulfiller.address}`);
-console.log(`   RPC:              ${RPC_URL}`);
+const oracleContract = new ethers.Contract(
+  ORACLE_ADDRESS,
+  ORACLE_ABI,
+  fulfiller
+);
+
+const marketContract = new ethers.Contract(
+  MARKET_ADDRESS,
+  MARKET_ABI,
+  provider
+);
+
+console.log("🔮 Oracle backend starting...");
+console.log(`   Oracle contract: ${ORACLE_ADDRESS}`);
+console.log(`   Market contract: ${MARKET_ADDRESS}`);
+console.log(`   Registry API:    ${REGISTRY_API_URL}`);
+console.log(`   Fulfiller:       ${fulfiller.address}`);
+console.log(`   RPC:             ${RPC_URL}`);
 
 const processedEvents = new Set();
 const pendingRegistry = new Map();
 const finishedRegistry = new Set();
 
+let oraclePolling = false;
+let registryPolling = false;
+
 const currentBlock = await provider.getBlockNumber();
 
-const LOOKBACK_BLOCKS =
-  Number(process.env.LOOKBACK_BLOCKS || 500);
+const LOOKBACK_BLOCKS = Number(
+  process.env.LOOKBACK_BLOCKS || 500
+);
 
-let lastProcessedBlock =
-  process.env.START_BLOCK
-    ? Number(process.env.START_BLOCK)
-    : Math.max(
-        0,
-        currentBlock - LOOKBACK_BLOCKS
-      );
+let lastProcessedBlock = process.env.START_BLOCK
+  ? Number(process.env.START_BLOCK)
+  : Math.max(0, currentBlock - LOOKBACK_BLOCKS);
 
 console.log(
   "Start polling from block:",
   lastProcessedBlock,
   `(current=${currentBlock}, lookback=${LOOKBACK_BLOCKS})`
 );
-console.log("Start polling from block:", lastProcessedBlock);
 
 async function registryFetch(pathname, options = {}) {
   const res = await fetch(`${REGISTRY_API_URL}${pathname}`, {
@@ -99,8 +110,17 @@ async function registryFetch(pathname, options = {}) {
       ...(options.headers || {}),
     },
   });
+
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Registry API error ${res.status}`);
+
+  if (!res.ok) {
+    throw new Error(
+      data.error ||
+        data.message ||
+        `Registry API error ${res.status}`
+    );
+  }
+
   return data;
 }
 
@@ -128,10 +148,52 @@ async function readDeal(dealId) {
   };
 }
 
-async function processOracleLogs() {
+function isAlreadyFulfilledError(err) {
+  const message = String(err?.message || "");
+  const reason = String(err?.reason || "");
+
+  return (
+    message.includes("Oracle: already fulfilled") ||
+    reason.includes("Oracle: already fulfilled")
+  );
+}
+
+async function sendTx(fn) {
   try {
-    const latestBlock =
-      await provider.getBlockNumber();
+    const tx = await fn();
+    const receipt = await tx.wait();
+
+    console.log(
+      `   📤 TX confirmed: ${receipt.hash.slice(0, 14)}...`
+    );
+
+    return receipt;
+  } catch (err) {
+    if (isAlreadyFulfilledError(err)) {
+      console.log(
+        "   ℹ️ Oracle request was already fulfilled earlier; skipping duplicate fulfil."
+      );
+
+      return null;
+    }
+
+    console.error(
+      `   ❌ TX error: ${err.message}`
+    );
+
+    throw err;
+  }
+}
+
+async function processOracleLogs() {
+  if (oraclePolling) {
+    return;
+  }
+
+  oraclePolling = true;
+
+  try {
+    const latestBlock = await provider.getBlockNumber();
 
     if (latestBlock <= lastProcessedBlock) {
       return;
@@ -151,28 +213,35 @@ async function processOracleLogs() {
       `🔎 Oracle logs found: ${logs.length}`
     );
 
+    let hadRetryableError = false;
+
     for (const log of logs) {
+      let parsed;
+
       try {
-        let parsed;
+        parsed = oracleContract.interface.parseLog(log);
+      } catch {
+        continue;
+      }
 
-        try {
-          parsed =
-            oracleContract.interface.parseLog(log);
-        } catch {
-          continue;
-        }
+      if (!parsed) {
+        continue;
+      }
 
-        if (!parsed) continue;
+      const uniqueEventKey =
+        `${log.transactionHash}:${log.index}`;
 
-        const uniqueEventKey =
-          `${log.transactionHash}:${log.index}`;
+      if (processedEvents.has(uniqueEventKey)) {
+        continue;
+      }
 
-        if (
-          processedEvents.has(uniqueEventKey)
-        ) {
-          continue;
-        }
+      /*
+       * Помечаем событие до await.
+       * Это защищает от повторной параллельной обработки.
+       */
+      processedEvents.add(uniqueEventKey);
 
+      try {
         if (parsed.name === "VerificationRequest") {
           const [
             requestId,
@@ -184,11 +253,8 @@ async function processOracleLogs() {
             fullName,
           ] = parsed.args;
 
-          const rid =
-            requestId.toString();
-
-          const reqTypeNum =
-            Number(reqType);
+          const rid = requestId.toString();
+          const reqTypeNum = Number(reqType);
 
           console.log(
             `\n📨 VerificationRequest #${rid} (deal ${dealId}, type=${reqTypeNum})`
@@ -219,13 +285,16 @@ async function processOracleLogs() {
               subjectAddress,
               fullName
             );
+          } else {
+            console.log(
+              `   ⚠ Unknown verification request type: ${reqTypeNum}`
+            );
           }
+
+          void dealContract;
         }
 
-        if (
-          parsed.name ===
-          "RegistryTransferRequest"
-        ) {
+        if (parsed.name === "RegistryTransferRequest") {
           const [
             requestId,
             dealId,
@@ -236,8 +305,7 @@ async function processOracleLogs() {
             priceWei,
           ] = parsed.args;
 
-          const rid =
-            requestId.toString();
+          const rid = requestId.toString();
 
           console.log(
             `\n📨 RegistryTransferRequest #${rid} (deal ${dealId})`
@@ -265,14 +333,10 @@ async function processOracleLogs() {
             priceWei
           );
         }
-
-        // Помечаем событие обработанным
-        // только после успешной обработки.
-        processedEvents.add(
-          uniqueEventKey
-        );
-
       } catch (eventError) {
+        processedEvents.delete(uniqueEventKey);
+        hadRetryableError = true;
+
         console.error(
           "❌ Oracle event processing error:",
           eventError.message
@@ -280,176 +344,531 @@ async function processOracleLogs() {
       }
     }
 
-    lastProcessedBlock =
-      latestBlock;
-
+    /*
+     * Если всё прошло нормально — передвигаем курсор вперёд.
+     * Если какое-то событие реально упало — оставляем диапазон
+     * для повторной попытки.
+     */
+    if (!hadRetryableError) {
+      lastProcessedBlock = latestBlock;
+    } else {
+      console.warn(
+        `⚠ Keeping lastProcessedBlock=${lastProcessedBlock} because at least one event must be retried.`
+      );
+    }
   } catch (err) {
     console.error(
       "❌ Oracle polling error:",
       err.message
     );
+  } finally {
+    oraclePolling = false;
   }
 }
 
-async function handleSellerVerification(requestId, dealId, cadastralNumber, sellerAddress, sellerFullName) {
+async function handleSellerVerification(
+  requestId,
+  dealId,
+  cadastralNumber,
+  sellerAddress,
+  sellerFullName
+) {
   await sleep(config.sellerVerificationDelay);
 
   if (config.sellerVerificationShouldFail) {
-    console.log(`   ✗ [MOCK FAIL] Seller verification failed`);
-    await sendTx(() => oracleContract.fulfilSellerVerification(requestId, false, "MOCK: Registry verification forced to fail"));
+    console.log(
+      "   ✗ [MOCK FAIL] Seller verification failed"
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilSellerVerification(
+        requestId,
+        false,
+        "MOCK: Registry verification forced to fail"
+      )
+    );
+
     return;
   }
 
+  let record;
+
   try {
-    const data = await registryFetch(`/properties/${encodeURIComponent(cadastralNumber)}`);
-    const record = data.property;
-    const normalizedInput = String(sellerAddress).toLowerCase();
-    const normalizedOwner = String(record.ownerAddress || "").toLowerCase();
+    const data = await registryFetch(
+      `/properties/${encodeURIComponent(cadastralNumber)}`
+    );
 
-    if (normalizedInput !== normalizedOwner) {
-      console.log(`   ✗ Address mismatch. Registry owner: ${record.ownerAddress}`);
-      await sendTx(() => oracleContract.fulfilSellerVerification(requestId, false, `Registry shows different owner: ${record.ownerName}`));
-      return;
-    }
-
-    const firstName = String(sellerFullName || "").split(" ")[0]?.toLowerCase();
-    const nameMatch = firstName && String(record.ownerName || "").toLowerCase().includes(firstName);
-    if (!nameMatch && String(sellerFullName || "").length > 0) {
-      console.log(`   ⚠ Name mismatch (non-fatal in demo): ${sellerFullName} vs ${record.ownerName}`);
-    }
-
-    console.log(`   ✓ Seller verified via registry service: ${sellerFullName} owns ${cadastralNumber}`);
-    await sendTx(() => oracleContract.fulfilSellerVerification(requestId, true, "Owner verified in mock state registry"));
+    record = data.property;
   } catch (err) {
-    console.log(`   ✗ Registry verification error: ${err.message}`);
-    await sendTx(() => oracleContract.fulfilSellerVerification(requestId, false, err.message));
+    console.log(
+      `   ✗ Registry verification error: ${err.message}`
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilSellerVerification(
+        requestId,
+        false,
+        err.message
+      )
+    );
+
+    return;
   }
+
+  if (!record) {
+    const reason =
+      "Registry property record is missing";
+
+    console.log(`   ✗ ${reason}`);
+
+    await sendTx(() =>
+      oracleContract.fulfilSellerVerification(
+        requestId,
+        false,
+        reason
+      )
+    );
+
+    return;
+  }
+
+  const normalizedInput =
+    String(sellerAddress).toLowerCase();
+
+  const normalizedOwner =
+    String(record.ownerAddress || "").toLowerCase();
+
+  if (normalizedInput !== normalizedOwner) {
+    console.log(
+      `   ✗ Address mismatch. Registry owner: ${record.ownerAddress}`
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilSellerVerification(
+        requestId,
+        false,
+        `Registry shows different owner: ${record.ownerName}`
+      )
+    );
+
+    return;
+  }
+
+  const firstName =
+    String(sellerFullName || "")
+      .split(" ")[0]
+      ?.toLowerCase();
+
+  const nameMatch =
+    firstName &&
+    String(record.ownerName || "")
+      .toLowerCase()
+      .includes(firstName);
+
+  if (
+    !nameMatch &&
+    String(sellerFullName || "").length > 0
+  ) {
+    console.log(
+      `   ⚠ Name mismatch (non-fatal in demo): ${sellerFullName} vs ${record.ownerName}`
+    );
+  }
+
+  console.log(
+    `   ✓ Seller verified via registry service: ${sellerFullName} owns ${cadastralNumber}`
+  );
+
+  await sendTx(() =>
+    oracleContract.fulfilSellerVerification(
+      requestId,
+      true,
+      "Owner verified in mock state registry"
+    )
+  );
+
+  void dealId;
 }
 
-async function handleBuyerVerification(requestId, dealId, buyerAddress, buyerFullName) {
+async function handleBuyerVerification(
+  requestId,
+  dealId,
+  buyerAddress,
+  buyerFullName
+) {
   await sleep(config.buyerVerificationDelay);
 
   if (config.buyerVerificationShouldFail) {
-    console.log(`   ✗ [MOCK FAIL] Buyer verification failed`);
-    await sendTx(() => oracleContract.fulfilBuyerVerification(requestId, false, "MOCK: Buyer verification forced to fail"));
+    console.log(
+      "   ✗ [MOCK FAIL] Buyer verification failed"
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilBuyerVerification(
+        requestId,
+        false,
+        "MOCK: Buyer verification forced to fail"
+      )
+    );
+
     return;
   }
 
-  if (!buyerFullName || buyerFullName.trim().length < 3) {
-    console.log(`   ✗ Buyer name too short`);
-    await sendTx(() => oracleContract.fulfilBuyerVerification(requestId, false, "Buyer full name is invalid"));
+  if (
+    !buyerFullName ||
+    buyerFullName.trim().length < 3
+  ) {
+    console.log(
+      "   ✗ Buyer name too short"
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilBuyerVerification(
+        requestId,
+        false,
+        "Buyer full name is invalid"
+      )
+    );
+
     return;
   }
 
-  console.log(`   ✓ Buyer verified: ${buyerFullName}`);
-  await sendTx(() => oracleContract.fulfilBuyerVerification(requestId, true, "Buyer identity confirmed"));
+  console.log(
+    `   ✓ Buyer verified: ${buyerFullName}`
+  );
+
+  await sendTx(() =>
+    oracleContract.fulfilBuyerVerification(
+      requestId,
+      true,
+      "Buyer identity confirmed"
+    )
+  );
+
+  void dealId;
+  void buyerAddress;
 }
 
-async function handleRegistryTransfer(requestId, dealId, dealContract, cadastralNumber, sellerFullName, buyerFullName, priceWei) {
+async function findExistingRegistryRequest(requestId) {
+  const data = await registryFetch(
+    "/transfer-requests"
+  );
+
+  const requests =
+    data.requests ||
+    data.transferRequests ||
+    data.items ||
+    [];
+
+  if (!Array.isArray(requests)) {
+    return null;
+  }
+
+  return (
+    requests.find(
+      (item) =>
+        String(item.oracleRequestId) ===
+        String(requestId)
+    ) || null
+  );
+}
+
+async function handleRegistryTransfer(
+  requestId,
+  dealId,
+  dealContract,
+  cadastralNumber,
+  sellerFullName,
+  buyerFullName,
+  priceWei
+) {
   await sleep(config.registryCreateDelay);
 
   if (config.registryShouldFail) {
-    console.log(`   ✗ [MOCK FAIL] Registry transfer failed before request creation`);
-    await sendTx(() => oracleContract.fulfilRegistryTransfer(requestId, false, "MOCK: Registry transfer forced to fail"));
+    console.log(
+      "   ✗ [MOCK FAIL] Registry transfer failed before request creation"
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilRegistryTransfer(
+        requestId,
+        false,
+        "MOCK: Registry transfer forced to fail"
+      )
+    );
+
     return;
   }
 
   try {
+    /*
+     * После рестарта Oracle сначала проверяем:
+     * не был ли Registry request уже создан раньше.
+     */
+    const existing =
+      await findExistingRegistryRequest(requestId);
+
+    if (existing) {
+      console.log(
+        `   ℹ️ Existing registry request found: ${existing.id} (${existing.status})`
+      );
+
+      if (
+        existing.status ===
+        "OWNERSHIP_TRANSFERRED"
+      ) {
+        await sendTx(() =>
+          oracleContract.fulfilRegistryTransfer(
+            requestId,
+            true,
+            existing.newRegistryId || ""
+          )
+        );
+
+        finishedRegistry.add(requestId);
+        return;
+      }
+
+      if (existing.status === "REJECTED") {
+        await sendTx(() =>
+          oracleContract.fulfilRegistryTransfer(
+            requestId,
+            false,
+            existing.rejectReason ||
+              "Registry request rejected"
+          )
+        );
+
+        finishedRegistry.add(requestId);
+        return;
+      }
+
+      pendingRegistry.set(requestId, {
+        requestId,
+        registryRequestId: existing.id,
+        dealId: dealId.toString(),
+        createdAt:
+          existing.createdAt || Date.now(),
+      });
+
+      return;
+    }
+
     const deal = await readDeal(dealId);
+
     const payload = {
       oracleRequestId: requestId,
       dealId: dealId.toString(),
-      cadastralNumber: String(cadastralNumber),
-      propertyAddress: deal.apartmentAddress,
-      sellerFullName: String(sellerFullName),
-      buyerFullName: String(buyerFullName),
-      sellerAddress: deal.seller,
-      buyerAddress: deal.buyer,
-      priceWei: priceWei.toString(),
-      priceEth: ethers.formatEther(priceWei),
-      escrowContract: MARKET_ADDRESS,
-      blockchainDealContract: String(dealContract),
+      cadastralNumber:
+        String(cadastralNumber),
+      propertyAddress:
+        deal.apartmentAddress,
+      sellerFullName:
+        String(sellerFullName),
+      buyerFullName:
+        String(buyerFullName),
+      sellerAddress:
+        deal.seller,
+      buyerAddress:
+        deal.buyer,
+      priceWei:
+        priceWei.toString(),
+      priceEth:
+        ethers.formatEther(priceWei),
+      escrowContract:
+        MARKET_ADDRESS,
+      blockchainDealContract:
+        String(dealContract),
     };
 
-    const data = await registryFetch("/transfer-requests", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    const data = await registryFetch(
+      "/transfer-requests",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
 
     const request = data.request;
+
+    if (!request?.id) {
+      throw new Error(
+        "Registry did not return request.id"
+      );
+    }
+
     pendingRegistry.set(requestId, {
       requestId,
-      registryRequestId: request.id,
-      dealId: dealId.toString(),
-      createdAt: Date.now(),
+      registryRequestId:
+        request.id,
+      dealId:
+        dealId.toString(),
+      createdAt:
+        Date.now(),
     });
 
-    console.log(`   🏛️ Registry request created: ${request.id}`);
-    console.log(`   Waiting for buyer approval in registry frontend...`);
+    console.log(
+      `   🏛️ Registry request created: ${request.id}`
+    );
+
+    console.log(
+      "   Waiting for buyer approval in registry frontend..."
+    );
   } catch (err) {
-    console.log(`   ✗ Cannot create registry request: ${err.message}`);
-    await sendTx(() => oracleContract.fulfilRegistryTransfer(requestId, false, `Registry request creation failed: ${err.message}`));
+    console.log(
+      `   ✗ Cannot create/use registry request: ${err.message}`
+    );
+
+    await sendTx(() =>
+      oracleContract.fulfilRegistryTransfer(
+        requestId,
+        false,
+        `Registry request creation failed: ${err.message}`
+      )
+    );
   }
 }
 
 async function pollRegistryStatuses() {
-  for (const [requestId, item] of pendingRegistry.entries()) {
-    if (finishedRegistry.has(requestId)) continue;
-
-    try {
-      const data = await registryFetch(`/oracle/transfer-requests/${encodeURIComponent(requestId)}/status`);
-      const request = data.request;
-
-      if (request.status === "WAITING_BUYER_APPROVAL") continue;
-
-      if (request.status === "BUYER_APPROVED") {
-        console.log(`   ⏳ Registry request ${request.id}: buyer approved, transfer in progress`);
-        continue;
-      }
-
-      if (request.status === "OWNERSHIP_TRANSFERRED") {
-        finishedRegistry.add(requestId);
-        pendingRegistry.delete(requestId);
-        console.log(`   ✓ Registry completed request ${request.id}. New record: ${request.newRegistryId}`);
-        await sendTx(() => oracleContract.fulfilRegistryTransfer(requestId, true, request.newRegistryId));
-        continue;
-      }
-
-      if (request.status === "REJECTED") {
-        finishedRegistry.add(requestId);
-        pendingRegistry.delete(requestId);
-        console.log(`   ✗ Registry request ${request.id} rejected: ${request.rejectReason}`);
-        await sendTx(() => oracleContract.fulfilRegistryTransfer(requestId, false, request.rejectReason || "Registry request rejected"));
-      }
-    } catch (err) {
-      console.error(`❌ Registry status polling error for request ${requestId}:`, err.message);
-    }
+  if (registryPolling) {
+    return;
   }
-}
 
-async function sendTx(fn) {
+  registryPolling = true;
+
   try {
-    const tx = await fn();
-    const receipt = await tx.wait();
-    console.log(`   📤 TX confirmed: ${receipt.hash.slice(0, 14)}...`);
-  } catch (err) {
-    console.error(`   ❌ TX error: ${err.message}`);
+    for (
+      const [requestId, item]
+      of pendingRegistry.entries()
+    ) {
+      if (
+        finishedRegistry.has(requestId)
+      ) {
+        continue;
+      }
+
+      try {
+        const data = await registryFetch(
+          `/oracle/transfer-requests/${encodeURIComponent(requestId)}/status`
+        );
+
+        const request = data.request;
+
+        if (!request) {
+          throw new Error(
+            "Registry status response has no request"
+          );
+        }
+
+        if (
+          request.status ===
+          "WAITING_BUYER_APPROVAL"
+        ) {
+          continue;
+        }
+
+        if (
+          request.status ===
+          "BUYER_APPROVED"
+        ) {
+          console.log(
+            `   ⏳ Registry request ${request.id}: buyer approved, transfer in progress`
+          );
+
+          continue;
+        }
+
+        if (
+          request.status ===
+          "OWNERSHIP_TRANSFERRED"
+        ) {
+          console.log(
+            `   ✓ Registry completed request ${request.id}. New record: ${request.newRegistryId}`
+          );
+
+          await sendTx(() =>
+            oracleContract.fulfilRegistryTransfer(
+              requestId,
+              true,
+              request.newRegistryId || ""
+            )
+          );
+
+          finishedRegistry.add(
+            requestId
+          );
+
+          pendingRegistry.delete(
+            requestId
+          );
+
+          continue;
+        }
+
+        if (
+          request.status ===
+          "REJECTED"
+        ) {
+          console.log(
+            `   ✗ Registry request ${request.id} rejected: ${request.rejectReason}`
+          );
+
+          await sendTx(() =>
+            oracleContract.fulfilRegistryTransfer(
+              requestId,
+              false,
+              request.rejectReason ||
+                "Registry request rejected"
+            )
+          );
+
+          finishedRegistry.add(
+            requestId
+          );
+
+          pendingRegistry.delete(
+            requestId
+          );
+        }
+      } catch (err) {
+        console.error(
+          `❌ Registry status polling error for request ${requestId}:`,
+          err.message
+        );
+      }
+
+      void item;
+    }
+  } finally {
+    registryPolling = false;
   }
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(
+    (resolve) => setTimeout(resolve, ms)
+  );
 }
 
 setInterval(() => {
-  processOracleLogs().catch((err) => console.error("❌ Oracle polling error:", err.message));
+  processOracleLogs().catch((err) =>
+    console.error(
+      "❌ Oracle polling error:",
+      err.message
+    )
+  );
 }, 2000);
 
 setInterval(() => {
-  pollRegistryStatuses().catch((err) => console.error("❌ Registry status polling error:", err.message));
+  pollRegistryStatuses().catch((err) =>
+    console.error(
+      "❌ Registry status polling error:",
+      err.message
+    )
+  );
 }, 2500);
 
 const app = express();
+
 app.use(express.json());
 
 app.get("/status", async (req, res) => {
@@ -457,12 +876,26 @@ app.get("/status", async (req, res) => {
 
   try {
     blockchain = {
-      currentBlock: await provider.getBlockNumber(),
+      currentBlock:
+        await provider.getBlockNumber(),
+
       lastProcessedBlock,
-      oracleAddress: ORACLE_ADDRESS,
-      marketAddress: MARKET_ADDRESS,
-      startBlockEnv: process.env.START_BLOCK || null,
-      lookbackBlocks: LOOKBACK_BLOCKS,
+
+      oracleAddress:
+        ORACLE_ADDRESS,
+
+      marketAddress:
+        MARKET_ADDRESS,
+
+      startBlockEnv:
+        process.env.START_BLOCK || null,
+
+      lookbackBlocks:
+        LOOKBACK_BLOCKS,
+
+      oraclePolling,
+
+      registryPolling,
     };
   } catch (err) {
     blockchain = {
@@ -472,24 +905,67 @@ app.get("/status", async (req, res) => {
 
   res.json({
     status: "ok",
+
     config,
-    processedEvents: processedEvents.size,
-    pendingRegistry: Array.from(pendingRegistry.values()),
-    registryApiUrl: REGISTRY_API_URL,
+
+    processedEvents:
+      processedEvents.size,
+
+    pendingRegistry:
+      Array.from(
+        pendingRegistry.values()
+      ),
+
+    finishedRegistry:
+      Array.from(
+        finishedRegistry
+      ),
+
+    registryApiUrl:
+      REGISTRY_API_URL,
+
     blockchain,
   });
 });
 
 app.patch("/config", (req, res) => {
-  config = { ...config, ...req.body };
-  console.log(`\n⚙️  Config updated:`, config);
-  res.json({ ok: true, config });
+  config = {
+    ...config,
+    ...req.body,
+  };
+
+  console.log(
+    "\n⚙️ Config updated:",
+    config
+  );
+
+  res.json({
+    ok: true,
+    config,
+  });
 });
 
 app.listen(Number(PORT), () => {
-  console.log(`\n🚀 Oracle backend HTTP API: http://localhost:${PORT}`);
-  console.log(`   GET  /status          — статус`);
-  console.log(`   PATCH /config         — изменить поведение (shouldFail, delay...)`);
-  console.log(`\n👂 Listening for oracle events...`);
-  processOracleLogs().catch((err) => console.error("❌ Initial oracle polling error:", err.message));
+  console.log(
+    `\n🚀 Oracle backend HTTP API: http://localhost:${PORT}`
+  );
+
+  console.log(
+    "   GET  /status          — статус"
+  );
+
+  console.log(
+    "   PATCH /config         — изменить поведение (shouldFail, delay...)"
+  );
+
+  console.log(
+    "\n👂 Listening for oracle events..."
+  );
+
+  processOracleLogs().catch((err) =>
+    console.error(
+      "❌ Initial oracle polling error:",
+      err.message
+    )
+  );
 });
