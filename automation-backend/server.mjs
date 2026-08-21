@@ -1533,7 +1533,50 @@ app.post(
     }
   }
 );
+// ============================================================
+// DYNAAPP — CHECK DEAL STAGE VIA BODY
+// ============================================================
 
+app.post(
+  "/api/manual/stage",
+  requireBlockchain,
+  async (req, res) => {
+    try {
+      const dealId = Number(req.body.dealId);
+
+      if (
+        !Number.isInteger(dealId) ||
+        dealId < 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "invalid_deal_id",
+          message: "Некорректный dealId",
+        });
+      }
+
+      const deal = await readManualDeal(dealId);
+
+      return res.json({
+        success: true,
+        dealId,
+        stage: deal.stage,
+        stageName: deal.stageName,
+        lastOracleError: deal.lastOracleError,
+        deal,
+      });
+
+    } catch (error) {
+      console.error("checkStageFromBody:", error);
+
+      return res.status(500).json({
+        success: false,
+        error: "stage_check_failed",
+        message: errorMessage(error),
+      });
+    }
+  }
+);
 // ============================================================
 // CHECK CURRENT STAGE
 // ============================================================
