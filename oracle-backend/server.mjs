@@ -72,7 +72,23 @@ const pendingRegistry = new Map();
 const finishedRegistry = new Set();
 
 const currentBlock = await provider.getBlockNumber();
-let lastProcessedBlock = process.env.START_BLOCK ? Number(process.env.START_BLOCK) : currentBlock;
+
+const LOOKBACK_BLOCKS =
+  Number(process.env.LOOKBACK_BLOCKS || 500);
+
+let lastProcessedBlock =
+  process.env.START_BLOCK
+    ? Number(process.env.START_BLOCK)
+    : Math.max(
+        0,
+        currentBlock - LOOKBACK_BLOCKS
+      );
+
+console.log(
+  "Start polling from block:",
+  lastProcessedBlock,
+  `(current=${currentBlock}, lookback=${LOOKBACK_BLOCKS})`
+);
 console.log("Start polling from block:", lastProcessedBlock);
 
 async function registryFetch(pathname, options = {}) {
@@ -114,8 +130,16 @@ async function readDeal(dealId) {
 
 async function processOracleLogs() {
   try {
-    const latestBlock = await provider.getBlockNumber();
-    if (latestBlock <= lastProcessedBlock) return;
+    const latestBlock =
+      await provider.getBlockNumber();
+
+    if (latestBlock <= lastProcessedBlock) {
+      return;
+    }
+
+    console.log(
+      `🔎 Scanning Oracle logs: ${lastProcessedBlock + 1} -> ${latestBlock}, address=${ORACLE_ADDRESS}`
+    );
 
     const logs = await provider.getLogs({
       address: ORACLE_ADDRESS,
@@ -123,51 +147,44 @@ async function processOracleLogs() {
       toBlock: latestBlock,
     });
 
-    lastProcessedBlock = latestBlock;
+    console.log(
+      `🔎 Oracle logs found: ${logs.length}`
+    );
 
     for (const log of logs) {
       let parsed;
+
       try {
-        parsed = oracleContract.interface.parseLog(log);
+        parsed =
+          oracleContract.interface.parseLog(log);
       } catch {
         continue;
       }
+
       if (!parsed) continue;
 
-      const uniqueEventKey = `${log.transactionHash}:${log.index}`;
-      if (processedEvents.has(uniqueEventKey)) continue;
+      const uniqueEventKey =
+        `${log.transactionHash}:${log.index}`;
+
+      if (
+        processedEvents.has(uniqueEventKey)
+      ) {
+        continue;
+      }
+
       processedEvents.add(uniqueEventKey);
 
-      if (parsed.name === "VerificationRequest") {
-        const [requestId, dealId, dealContract, reqType, cadastralNumber, subjectAddress, fullName] = parsed.args;
-        const rid = requestId.toString();
-        const reqTypeNum = Number(reqType);
-
-        console.log(`\n📨 VerificationRequest #${rid} (deal ${dealId}, type=${reqTypeNum})`);
-        console.log(`   Subject: ${subjectAddress} | ${fullName}`);
-        if (cadastralNumber) console.log(`   Cadastral: ${cadastralNumber}`);
-
-        if (reqTypeNum === 0) {
-          await handleSellerVerification(rid, dealId, cadastralNumber, subjectAddress, fullName);
-        } else if (reqTypeNum === 1) {
-          await handleBuyerVerification(rid, dealId, subjectAddress, fullName);
-        }
-      }
-
-      if (parsed.name === "RegistryTransferRequest") {
-        const [requestId, dealId, dealContract, cadastralNumber, sellerFullName, buyerFullName, priceWei] = parsed.args;
-        const rid = requestId.toString();
-
-        console.log(`\n📨 RegistryTransferRequest #${rid} (deal ${dealId})`);
-        console.log(`   Cadastral: ${cadastralNumber}`);
-        console.log(`   ${sellerFullName} → ${buyerFullName}`);
-        console.log(`   Price: ${ethers.formatEther(priceWei)} ETH`);
-
-        await handleRegistryTransfer(rid, dealId, dealContract, cadastralNumber, sellerFullName, buyerFullName, priceWei);
-      }
+      // дальше твоя существующая обработка
+      // VerificationRequest / RegistryTransferRequest
     }
+
+    lastProcessedBlock = latestBlock;
+
   } catch (err) {
-    console.error("❌ Oracle polling error:", err.message);
+    console.error(
+      "❌ Oracle polling error:",
+      err.message
+    );
   }
 }
 
@@ -332,13 +349,31 @@ setInterval(() => {
 const app = express();
 app.use(express.json());
 
-app.get("/status", (req, res) => {
+app.get("/status", async (req, res) => {
+  let blockchain = {};
+
+  try {
+    blockchain = {
+      currentBlock: await provider.getBlockNumber(),
+      lastProcessedBlock,
+      oracleAddress: ORACLE_ADDRESS,
+      marketAddress: MARKET_ADDRESS,
+      startBlockEnv: process.env.START_BLOCK || null,
+      lookbackBlocks: LOOKBACK_BLOCKS,
+    };
+  } catch (err) {
+    blockchain = {
+      error: err.message,
+    };
+  }
+
   res.json({
     status: "ok",
     config,
     processedEvents: processedEvents.size,
     pendingRegistry: Array.from(pendingRegistry.values()),
     registryApiUrl: REGISTRY_API_URL,
+    blockchain,
   });
 });
 
